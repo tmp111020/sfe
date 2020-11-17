@@ -1,0 +1,3 @@
+* sfe
+R package for spatial feature engineering (sfe) with polygons and
+points created from place-based surveys.

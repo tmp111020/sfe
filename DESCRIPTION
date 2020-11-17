@@ -1,0 +1,17 @@
+Package: sfe
+Title: Spatial Feature Engineering
+Version: 0.1
+Authors@R: person("blind", "review", email = "blind.review.111020@gmail.com",
+                  role = c("aut", "cre"))
+Description: This package is used for feature engineering with spatial data
+Depends: R (>= 3.6),
+  sf,
+  dplyr
+Imports:
+  purrr,
+  readr,
+  magrittr,
+  geosphere,
+License: GPLv3
+LazyData: true
+RoxygenNote: 7.1.0
