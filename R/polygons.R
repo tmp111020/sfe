@@ -24,10 +24,12 @@ read_and_clean <- function(file.name) {
     st_make_valid() %>%
     ## dissolve features
     st_union() %>%
-    ## from geometry set back to sf/dataframe
-    st_sf() %>%
     ## get collections to more primitive geometry types
-    st_collection_extract()
+    st_collection_extract() %>%
+    ## dissolve again for those collections which have multiple features
+    st_union() %>%
+    ## from geometry set back to sf/dataframe (dplyr::distinct needs a dataframe, can't use sf)
+    st_sf()
 
   return(x)
 }
@@ -59,8 +61,10 @@ load_polygons <- function(dsn) {
 
   ## remove duplicates here, convert from collections
   poly.unique <- poly %>%
+    ## this will convert polygon to multipolygon
     st_collection_extract() %>%
-    dplyr::distinct(., .keep_all = TRUE)
+    ## remove file name to get rid of duplicates
+    dplyr::distinct(., geometry, .keep_all = TRUE)
 
   return(poly.unique)
 }
@@ -150,7 +154,14 @@ area <- function(x, crs = NA) {
   return(area)
 }
 
-state_int <- function(x, crs = NA) {
+## TODO remove warnings about st_centroid and CRS
+## TODO figure out if crs matters (based on warning) -> idea: remove crs to
+## prevent warning. it actually makes sense to use the default CRS here instead
+## of transforming, otherwise intersections that don't exist on a survey will
+## potentially be there in the calculation? one caveat is if someone asks users
+## to complete a survey in something other than epsg 4326 (not likely for web
+## mapping, but still)
+state_int_per <- function(x, crs = NA) {
   if (!is.na(crs)) {
     x <- x %>% st_transform(crs)
     states <- states %>% st_transform(crs)
@@ -159,11 +170,31 @@ state_int <- function(x, crs = NA) {
     states <- st_set_crs(states, NA)
   }
 
-  int <- st_intersects(states, x, sparse = FALSE) %>%
-    as.numeric()
+  ## set column value to zero
+  states$area_int <- 0
 
-  df <- data.frame(matrix(data = int, ncol = 49, byrow = TRUE))
-  colnames(df) <- paste0(sfe::states$STUSPS, "_int")
+  ## find states that actually intersect
+  int_cond <- st_intersects(states, x, sparse = FALSE)
+
+  ## create empty matrix
+  mat <- matrix(0, nrow = nrow(states), ncol = nrow(x))
+
+  ## only update rows where the state intersection is there
+  for (i in 1:ncol(mat)) {
+    mat[,i][which(int_cond[,i])] <- st_intersection(x[i,], states) %>% st_area %>% as.numeric
+  }
+
+  # create matrix of state areas
+  state_area_mat <- matrix(rep(st_area(states), nrow(x)), nrow = nrow(states), ncol = nrow(x))
+
+  ## get area of each state, transpose matrix
+  df <- data.frame(t(mat / state_area_mat))
+
+  ## get the percentage intersection
+  #states$int_per <- states$area_int / states$area
+
+  #df <- data.frame(matrix(data = states$int_per, ncol = 49, byrow = TRUE))
+  colnames(df) <- paste0(sfe::states$STUSPS, "_int_per")
 
   return(df)
 }
@@ -187,6 +218,39 @@ state_cent_int <- function(x, crs = NA) {
   colnames(df) <- paste0(sfe::states$STUSPS, "_cent")
 
   return(df)
+}
+
+historic_def_int_per <- function(x, historic_definition) {
+
+  vals <- c()
+
+  historic_definition <- st_transform(historic_definition, st_crs(x))
+  x <- st_set_crs(x, NA)
+  historic_definition <- st_set_crs(historic_definition, NA)
+
+  ## this ought to be vectorized but doing so with spatial operations in this
+  ## way is challenging
+  for (i in 1:nrow(x)) {
+
+    ## get the intersection between the user response and the historic definition
+    x_int_historic <- st_intersection(x[i,], historic_definition)
+
+    if (length(st_area(x_int_historic)) == 0) {
+
+      percent_overlap <- 0
+
+    } else {
+
+      historic_area <- st_area(historic_definition)
+      x_int_historic_area <- st_area(x_int_historic)
+      percent_overlap <- x_int_historic_area / historic_area
+    }
+
+    vals <- c(vals, percent_overlap)
+
+  }
+
+  return(vals)
 }
 
 great_lakes_sts_int <- function(x, crs = NA) {
@@ -255,7 +319,7 @@ nw_angle_int <- function(x, crs = NA) {
 #' @return sf object with original columns and newly created columns
 #' @export
 #'
-poly_features <- function(x, crs = NA, state_intersect = TRUE, state_cent_intersect = TRUE, great_lakes_intersect = TRUE, big_ten_cities = TRUE) {
+poly_features <- function(x, crs = NA, state_intersect = TRUE, state_cent_intersect = TRUE, historic_def_int_per = TRUE, great_lakes_intersect = TRUE, big_ten_cities = TRUE) {
   x$cent_x <- cent(x, "X", crs)
   x$cent_y <- cent(x, "Y", crs)
   x$area <- area(x, crs)
@@ -274,14 +338,20 @@ poly_features <- function(x, crs = NA, state_intersect = TRUE, state_cent_inters
 
   ## US state intersections
   if (state_intersect) {
-    state_int <- state_int(x)
-    x <- cbind(x, state_int)
+    state_int_per <- state_int_per(x)
+    x <- cbind(x, state_int_per)
   }
 
   ## US state centroid intersections
   if (state_cent_intersect) {
     state_cent_int <- state_cent_int(x)
     x <- cbind(x, state_cent_int)
+  }
+
+  ## historic definition intersections
+  if (historic_def_int_per) {
+    x$shortrige_int_per <- historic_def_int_per(x, shortridge[4,])
+    x$census_def_int_per <- historic_def_int_per(x, census_def)
   }
 
   ## number of great lakes states intersected
